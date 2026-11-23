@@ -1,4 +1,5 @@
 """Browser regression: onboard or skip once across fresh drafts; keep data outside the install."""
+import hashlib
 import io
 import json
 import os
@@ -8,7 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from PIL import Image
 from playwright.sync_api import expect, sync_playwright
@@ -62,25 +63,93 @@ class FirstUseTest(unittest.TestCase):
         page.locator("#welcome-file").set_input_files({"name":"人物示例.png","mimeType":"image/png","buffer":stream.getvalue()})
         expect(page.locator("#portrait-welcome")).to_be_hidden()
         draft = json.loads((project/"cover.json").read_bytes())
-        people = [layer for layer in draft["layers"] if layer["kind"]=="character"]
+        people = [layer for layer in draft["canvases"]["portrait"]["layers"] if layer["kind"]=="character"]
         self.assertEqual(len(people),1)
         person = people[0]
         self.assertEqual(person["sourceLabel"],"人物示例")
         self.assertTrue((project/"assets"/person["src"]).is_file())
-        self.assertTrue(all(person["id"] in [p["id"] for p in layout] for layout in draft["layouts"].values()))
+        self.assertTrue(all(not any(l["kind"]=="character" for l in canvas["layers"])
+                            for key,canvas in draft["canvases"].items() if key!="portrait"))
         next_page,_,next_url = self.open_draft("second")
         catalog = json.load(urlopen(next_url+"/api/catalog",timeout=5))
         self.assertEqual([item["file"] for item in catalog["character"]],[person["src"]])
         expect(next_page.locator("#portrait-welcome")).to_be_hidden()
         expect(next_page.locator("#new-character")).to_be_hidden()
         next_doc=json.load(urlopen(next_url+"/api/draft"))
-        self.assertEqual([l["src"] for l in next_doc["layers"] if l["kind"]=="character"],[person["src"]])
-        self.assertEqual({k:next(p for p in a if p["id"]==person["id"])["x"] for k,a in draft["layouts"].items()},
-                         {k:a[-1]["x"] for k,a in next_doc["layouts"].items()})
+        for canvas in next_doc["canvases"].values():
+            self.assertEqual([l["src"] for l in canvas["layers"] if l["kind"]=="character"],[person["src"]])
+        self.assertEqual(draft["canvases"]["portrait"]["layout"][-1]["x"],
+                         next_doc["canvases"]["portrait"]["layout"][-1]["x"])
         skipped,_,_=self.open_draft("third","--skip-character","--skip-screenshot")
         expect(skipped.locator("#new-character")).to_be_visible()
         expect(skipped.locator("#shot-welcome")).to_be_hidden()
         self.assertEqual(len(json.load(urlopen(url+"/api/catalog"))["character"]),1)
+
+    def test_edit_and_export_only_current_format(self):
+        page,project,url=self.open_draft("isolated","--skip-character","--skip-screenshot","--title","Original")
+        def export_pixel_digests():
+            draft=json.load(urlopen(url+"/api/draft"))
+            request=Request(url+"/api/confirm",data=json.dumps({
+                "formats":list(draft["canvases"]),"revision":draft["revision"],
+                "projectId":draft["projectId"],"outputDir":str(self.root/"finished")
+            }).encode(),headers={"X-Cover-Workbench":"1"})
+            with urlopen(request) as response:
+                self.assertTrue(json.load(response)["confirmed"])
+            files=json.loads(subprocess.check_output([sys.executable,"-B",str(SCRIPT),"finish",str(project)]))
+            pixels={}
+            for key,path in files.items():
+                with Image.open(path) as im:
+                    pixels[key]=hashlib.sha256(im.tobytes()).hexdigest()
+            return pixels
+        before=export_pixel_digests()
+        text=page.locator("textarea[data-field=text]")
+        text.fill("Portrait only")
+        page.locator("#new-text").click()
+        page.locator('[data-format="wide"]').click()
+        page.locator('[data-id="title"] .pick').click()
+        expect(text).to_have_value("Original")
+        expect(page.locator("#undo")).to_be_disabled()
+        text.fill("Wide only")
+        page.locator("#undo").click()
+        expect(text).to_have_value("Original")
+        page.locator('[data-format="portrait"]').click()
+        page.locator('[data-id="title"] .pick').click()
+        expect(text).to_have_value("Portrait only")
+        expect(page.locator("#save-state")).to_have_text("已同步")
+        page.reload()
+        expect(text).to_have_value("Portrait only")
+        after=export_pixel_digests()
+        self.assertNotEqual(after["portrait"],before["portrait"])
+        for key in ("main","wide","wechat"):
+            self.assertEqual(before[key],after[key],key)
+
+    def test_open_legacy_draft_then_add_media_to_one_format(self):
+        project=self.root/"legacy"
+        project.mkdir()
+        (project/"assets").mkdir()
+        sizes={"portrait":(1080,1440),"main":(1440,1080),"wide":(1920,1080)}
+        legacy={"schema":1,"revision":7,"projectId":"legacy","name":"Legacy",
+                "layers":[{"kind":"background","id":"background","name":"Background","color":"#ffffff"}],
+                "layouts":{k:[{"id":"background","x":0,"y":0,"w":w,"h":h,"rotation":0,"fs":72,
+                               "visible":True,"locked":True}] for k,(w,h) in sizes.items()}}
+        file=project/"cover.json"
+        saved=json.dumps(legacy).encode()
+        file.write_bytes(saved)
+        _,_,url=self.open_draft("legacy")
+        original=json.load(urlopen(url+"/api/draft"))
+        self.assertEqual(original["schema"],2)
+        self.assertEqual(file.read_bytes(),saved)
+        sample=self.root/"shot.png"
+        Image.new("RGB",(60,40),"#235680").save(sample)
+        cmd=[sys.executable,"-B",str(SCRIPT),"add-media",str(project),"--screenshot",str(sample),"--format","wide"]
+        self.assertEqual(json.loads(subprocess.check_output(cmd))["added"],1)
+        self.assertEqual(json.loads(subprocess.check_output(cmd))["added"],0)
+        updated=json.load(urlopen(url+"/api/draft"))
+        self.assertEqual(set(updated["canvases"]),{"portrait","main","wide","wechat"})
+        self.assertEqual(len(updated["canvases"]["wide"]["layers"]),2)
+        for key in ("portrait","main","wechat"):
+            self.assertEqual(original["canvases"][key],updated["canvases"][key])
+        self.assertEqual(updated["revision"],8)
 
     def test_skip_persists_and_manual_entry_remains(self):
         page,_,url = self.open_draft("first")
@@ -112,12 +181,14 @@ class FirstUseTest(unittest.TestCase):
         self.assertEqual(result["added"],1)
         self.assertEqual(json.loads(subprocess.check_output(cmd))["revision"],result["revision"])
         chat_doc=json.load(urlopen(chat_url+"/api/draft"))
-        for key in browser_doc["layouts"]:
-            left=browser_doc["layouts"][key][-1].copy()
-            right=chat_doc["layouts"][key][-1].copy()
-            left.pop("id")
-            right.pop("id")
-            self.assertEqual(left,right)
+        left=browser_doc["canvases"]["portrait"]["layout"][-1].copy()
+        right=chat_doc["canvases"]["portrait"]["layout"][-1].copy()
+        left.pop("id")
+        right.pop("id")
+        self.assertEqual(left,right)
+        for key in ("main","wide","wechat"):
+            self.assertEqual(len(browser_doc["canvases"][key]["layers"]),3)
+            self.assertEqual(len(chat_doc["canvases"][key]["layers"]),4)
 
 
 if __name__ == "__main__":

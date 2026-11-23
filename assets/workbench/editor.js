@@ -11,9 +11,11 @@ const icons={
 };
 const icon=id=>'<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">'+icons[id]+'</svg>';
 let doc,key="portrait",active="title",scale=1,rev=0,seq=0,saved=0,timer,saving,conflict=false,redraw=0,gesture=null,uploadJob=null,messageTimer;
-const undoStack=[],redoStack=[];
-const layers=()=>doc.layouts[key];
-const model=(id=active)=>doc.layers.find(l=>l.id===id);
+const histories=Object.fromEntries(Object.keys(sizes).map(format=>[format,{undo:[],redo:[]}]));
+const currentCanvas=()=>doc.canvases[key];
+const layers=()=>currentCanvas().layout;
+const models=()=>currentCanvas().layers;
+const model=(id=active)=>models().find(l=>l.id===id);
 const pos=(id=active)=>layers().find(l=>l.id===id);
 function info(text,link){
   const el=$("#feedback");clearTimeout(messageTimer);el.replaceChildren(document.createTextNode(text));el.hidden=false;
@@ -43,9 +45,26 @@ async function save(){
   try{await saving}finally{saving=null}
 }
 function backup(){const blob=new Blob([JSON.stringify(doc,null,2)],{type:"application/json"});const u=URL.createObjectURL(blob),a=document.createElement("a");a.href=u;a.download="cover-conflict.json";a.click();setTimeout(()=>URL.revokeObjectURL(u),1000)}
-function checkpoint(){undoStack.push(JSON.stringify(doc));if(undoStack.length>55)undoStack.shift();redoStack.length=0;historyButtons()}
-function historyButtons(){$("#undo").disabled=!undoStack.length;$("#redo").disabled=!redoStack.length}
-function history(from,to){if(!from.length)return;creating=null;choiceVersion++;to.push(JSON.stringify(doc));doc=JSON.parse(from.pop());doc.revision=rev;if(!model())active=doc.layers.at(-1).id;renderUI();dirty()}
+function checkpoint(){
+  const h=histories[key];
+  h.undo.push(structuredClone(currentCanvas()));
+  if(h.undo.length>55)h.undo.shift();
+  h.redo.length=0;
+  historyButtons();
+}
+function historyButtons(){
+  $("#undo").disabled=!histories[key].undo.length;
+  $("#redo").disabled=!histories[key].redo.length;
+}
+function history(direction){
+  const h=histories[key],from=h[direction],to=direction==="undo"?h.redo:h.undo;
+  if(!from.length)return;
+  creating=null;choiceVersion++;
+  to.push(currentCanvas());
+  doc.canvases[key]=from.pop();
+  if(!model())active=layers().at(-1).id;
+  renderUI();dirty();
+}
 function change(fn){checkpoint();creating=null;choiceVersion++;fn();renderUI();dirty()}
 function remember(){try{localStorage.setItem("cover-ui-"+doc.projectId,JSON.stringify({key,active}))}catch{}}
 function select(id){if(!model(id))return;creating=null;choiceVersion++;active=id;remember();renderUI()}
@@ -66,10 +85,10 @@ function fit(){
 }
 let shotSkipped=false;
 function drawLayers(){
-  $("#shot-welcome").hidden=shotSkipped||doc.skipScreenshotHint||doc.layers.some(l=>l.kind==="image"&&l.role!=="sticker");
-  if(doc.layers.some(l=>l.kind==="character"))$("#portrait-welcome").hidden=true;
-  $("#layer-count").textContent=doc.layers.length;
-  $("#new-character").hidden=doc.layers.some(l=>l.kind==="character");
+  $("#shot-welcome").hidden=shotSkipped||doc.skipScreenshotHint||models().some(l=>l.kind==="image"&&l.role!=="sticker");
+  if(models().some(l=>l.kind==="character"))$("#portrait-welcome").hidden=true;
+  $("#layer-count").textContent=models().length;
+  $("#new-character").hidden=models().some(l=>l.kind==="character");
   $("#layers").innerHTML=[...layers()].reverse().map(p=>{
     const l=model(p.id),src=l.src||l.parts?.[0];
     const mini=src?'<img alt="" src="/assets/'+esc(src)+'">':l.kind==="text"?"T":"▧";
@@ -93,7 +112,7 @@ function layerAsset(layer){
   const builtinId=kind==="font"&&!file.includes(".")?file:null;
   if(builtinId&&!catalogHas(kind,builtinId))return null;
   const name=(kind==="font"?layer.fontLabel:layer.sourceLabel)||layer.name;
-  return {kind,file,layer:layer.id,layerName:layer.name,name:layer.cutoutOriginal?name.slice(0,74)+" · 透明底":name,
+  return {kind,file,format:key,layer:layer.id,layerName:layer.name,name:layer.cutoutOriginal?name.slice(0,74)+" · 透明底":name,
     saved:!!builtinId||catalogHas(kind,file)};
 }
 function saveAssetButton(layer){
@@ -104,24 +123,19 @@ function saveAssetButton(layer){
 let creating=null,choiceVersion=0,pendingChoice=null;
 const choicesBox='<div class="image-options"></div>';
 const mediaRectangles=JSON.parse($("#media-rectangles").textContent);
-function mediaSlots(kind,aspect){
-  const index=doc.layers.filter(l=>l.kind==="image"&&l.role!=="sticker").length;
-  const result={};
-  for(const [format,[w,h]] of Object.entries(sizes)){
-    const options=mediaRectangles[format==="portrait"?"portrait":"landscape"][kind];
-    const box=options[index%options.length];
-    const width=Math.min(w*box.w,h*box.h*aspect),height=width/aspect;
-    const x="right" in box?w*box.right-width:w*box.x;
-    const y="bottom" in box?h*box.bottom-height:h*box.y;
-    result[format]={x:Math.round(x),y:Math.round(y),w:Math.max(1,Math.round(width)),h:Math.max(1,Math.round(height)),
-      fs:72,rotation:box.rotation,visible:true,locked:false};
-  }
-  return result;
+function mediaPosition(kind,aspect){
+  const count=models().filter(l=>kind==="character"?l.kind==="character":l.kind==="image"&&l.role!=="sticker").length;
+  const [w,h]=sizes[key],options=mediaRectangles[key==="portrait"?"portrait":"landscape"][kind];
+  const box=options[count%options.length],width=Math.min(w*box.w,h*box.h*aspect),height=width/aspect;
+  const x="right" in box?w*box.right-width:w*box.x;
+  const y="bottom" in box?h*box.bottom-height:h*box.y;
+  return {x:Math.round(x),y:Math.round(y),w:Math.max(1,Math.round(width)),h:Math.max(1,Math.round(height)),
+    fs:72,rotation:box.rotation,visible:true,locked:false};
 }
-function addArtwork(kind,file,name,positions){
+function addArtwork(kind,file,name,position){
   const layer={kind:kind==="sticker"?"image":"character",name,src:file,fit:"contain",sourceLabel:name};
   if(kind==="sticker")Object.assign(layer,{role:"sticker",frame:false});
-  addLayer(layer,imageAspect(file),positions);
+  addLayer(layer,imageAspect(file),position);
 }
 function fillChoices(kind,layer){
   const file=layer?.src;
@@ -154,11 +168,11 @@ async function applyMaterial(kind,item){
   const file=ref?.file||item.file;
   if(file&&kind!=="font")await loadImage(file);
   if(kind==="font")await loadProjectFont(item.id);
-  const positions=adding==="character"?mediaSlots("character",imageAspect(file)):null;
+  const position=adding==="character"?mediaPosition("character",imageAspect(file)):null;
   if(active!==id||creating!==adding||version!==choiceVersion)return;
   const target=model(id);
   change(()=>{
-    if(adding)addArtwork(kind,file,item.name,positions);
+    if(adding)addArtwork(kind,file,item.name,position);
     else if(kind==="font"){target.font=item.id;target.fontLabel=item.name}
     else if(kind==="background"&&item.builtin)target.preset=item.id;
     else{
@@ -241,7 +255,7 @@ function localField(el,final=false){
 $("#properties").addEventListener("focusin",e=>{if(e.target.dataset.field)delete e.target.dataset.editing});
 $("#properties").addEventListener("input",e=>{if(e.target.dataset.field && e.target.tagName!=="SELECT")localField(e.target)});
 $("#properties").addEventListener("change",e=>{if(e.target.dataset.field==="font"){const pick=visibleItems("font").find(i=>i.id===e.target.value);if(pick)pickMaterial("font",pick).catch(report)}else if(e.target.dataset.field)localField(e.target,true)});
-function upload(action,id){uploadJob={action,id};$("#upload").value="";$("#upload").click()}
+function upload(action,id){uploadJob={action,id,format:key,version:choiceVersion};$("#upload").value="";$("#upload").click()}
 function setLayerImage(layer,file,label){
   if(layer.kind==="character")delete layer.cutoutOriginal;
   if(layer.kind==="background"&&(layer.src!==file||layer.preset!=="image")){
@@ -254,18 +268,17 @@ function setLayerImage(layer,file,label){
 function splitCard(layer){
   const parts=layer.parts.map((file,i)=>({id:"l"+crypto.randomUUID(),kind:"image",name:layer.name+" "+(i+1),src:file,fit:"contain",frame:false}));
   const weights=parts.map(part=>1/imageAspect(part.src)),total=weights.reduce((a,b)=>a+b,0);
-  doc.layers.splice(doc.layers.indexOf(layer),1,...parts);
-  for(const items of Object.values(doc.layouts)){
-    const index=items.findIndex(p=>p.id===layer.id), p=items[index];
-    const border=layer.frame?Math.max(7,p.w*.024):0, gap=border*.75;
-    const width=Math.max(1,p.w-2*border),inside=Math.max(1,p.h-2*border-gap*(parts.length-1));
-    const angle=p.rotation*Math.PI/180;let top=border;
-    const boxes=parts.map((part,i)=>{
-      const height=Math.max(1,inside*weights[i]/total), dy=top+height/2-p.h/2;top+=height+gap;
-      return {...p,id:part.id,w:width,h:height,x:p.x+p.w/2-dy*Math.sin(angle)-width/2,y:p.y+p.h/2+dy*Math.cos(angle)-height/2};
-    });
-    items.splice(index,1,...boxes);
-  }
+  models().splice(models().indexOf(layer),1,...parts);
+  const items=layers();
+  const index=items.findIndex(p=>p.id===layer.id), p=items[index];
+  const border=layer.frame?Math.max(7,p.w*.024):0, gap=border*.75;
+  const width=Math.max(1,p.w-2*border),inside=Math.max(1,p.h-2*border-gap*(parts.length-1));
+  const angle=p.rotation*Math.PI/180;let top=border;
+  const boxes=parts.map((part,i)=>{
+    const height=Math.max(1,inside*weights[i]/total), dy=top+height/2-p.h/2;top+=height+gap;
+    return {...p,id:part.id,w:width,h:height,x:p.x+p.w/2-dy*Math.sin(angle)-width/2,y:p.y+p.h/2+dy*Math.cos(angle)-height/2};
+  });
+  items.splice(index,1,...boxes);
   active=parts[0].id;
 }
 $("#properties").addEventListener("click",e=>{
@@ -278,10 +291,10 @@ $("#properties").addEventListener("click",e=>{
  }
  const b=e.target.closest("[data-action]");if(!b)return;const a=b.dataset.action,l=model(),p=pos();
  if(a==="cutout"){
-   const {id,src}=l;
-   previewCutout({id,src,request,save,loadImage,apply:file=>{
+   const {id,src}=l,format=key;
+   previewCutout({id,src,format,request,save,loadImage,apply:file=>{
      const target=model(id);
-     if(active!==id||target?.src!==src)throw new Error("人物图层已更换，请重新预览。");
+     if(key!==format||active!==id||target?.src!==src)throw new Error("人物图层已更换，请重新预览。");
      change(()=>{target.cutoutOriginal=src;target.src=file});
    }});return;
  }
@@ -298,7 +311,7 @@ $("#properties").addEventListener("click",e=>{
  if(a==="split"&&l.parts?.length)return change(()=>splitCard(l));
  if(a==="lock")return change(()=>p.locked=!p.locked);
  if(a==="toggle")return change(()=>p.visible=!p.visible);
- if(a==="remove"&&l.kind!=="background")change(()=>{doc.layers=doc.layers.filter(i=>i.id!==active);for(const k in doc.layouts)doc.layouts[k]=doc.layouts[k].filter(i=>i.id!==active);active=layers().at(-1).id});
+ if(a==="remove"&&l.kind!=="background")change(()=>{currentCanvas().layers=models().filter(i=>i.id!==active);currentCanvas().layout=layers().filter(i=>i.id!==active);active=layers().at(-1).id});
 });
 const layerList=$("#layers");
 let hold=null, ignoreClick=false;
@@ -349,7 +362,7 @@ window.addEventListener("pointerup",e=>{
     const display=[...layers()].reverse().filter(p=>p.id!==id);
     display.splice(display.findIndex(p=>p.id===target)+(after?1:0),0,pos(id));
     const next=display.reverse();
-    if(next.some((p,i)=>p!==layers()[i])){change(()=>{doc.layouts[key]=next;active=id});remember();return}
+    if(next.some((p,i)=>p!==layers()[i])){change(()=>{currentCanvas().layout=next;active=id});remember();return}
   }
   select(id);
 });
@@ -361,17 +374,17 @@ layerList.addEventListener("click",e=>{if(ignoreClick){ignoreClick=false;e.stopI
 $("#layers").addEventListener("click",e=>{const button=e.target.closest("[data-act]");if(!button)return;const id=button.closest("[data-id]").dataset.id;if(button.dataset.act==="visibility"){change(()=>pos(id).visible=!pos(id).visible)}else select(id)});
 function moveOrder(step){const items=layers(),at=items.indexOf(pos()),to=at+step;if(at<1||to<1||to>=items.length)return;change(()=>[items[at],items[to]]=[items[to],items[at]])}
 $("#raise").onclick=()=>moveOrder(1);$("#lower").onclick=()=>moveOrder(-1);
-function addLayer(layer,aspect=1.8,positions=null){
-  layer.id="l"+crypto.randomUUID();doc.layers.push(layer);
-  for(const [k,[w,h]] of Object.entries(sizes)){
-    if(positions){
-      const items=doc.layouts[k];
-      const at=layer.role==="screenshot"?items.findIndex(p=>model(p.id)?.kind==="character"):-1;
-      items.splice(at<0?items.length:at,0,{...positions[k],id:layer.id});
-      continue;
-    }
-    const width=Math.round(w*.45);doc.layouts[k].push({id:layer.id,x:Math.round(w*.15),y:Math.round(h*.35),w:width,h:Math.round(Math.min(h*.55,width/aspect)),fs:Math.round(w*.052),visible:true,locked:false,rotation:0});
-  }active=layer.id;
+function addLayer(layer,aspect=1.8,position=null){
+  layer.id="l"+crypto.randomUUID();
+  models().push(layer);
+  if(position){
+    const at=layer.role==="screenshot"?layers().findIndex(p=>model(p.id)?.kind==="character"):-1;
+    layers().splice(at<0?layers().length:at,0,{...position,id:layer.id});
+  }else{
+    const [w,h]=sizes[key],width=Math.round(w*.45);
+    layers().push({id:layer.id,x:Math.round(w*.15),y:Math.round(h*.35),w:width,h:Math.round(Math.min(h*.55,width/aspect)),fs:Math.round(w*.052),visible:true,locked:false,rotation:0});
+  }
+  active=layer.id;
 }
 $("#new-text").onclick=()=>change(()=>addLayer({kind:"text",name:"文字",text:"新文字",font:"sans",color:"#252735"},3.5));
 $("#new-image").onclick=()=>{creating=null;drawProperties();upload("new",null)};
@@ -379,13 +392,14 @@ for(const kind of ["character","sticker"])$("#new-"+kind).onclick=()=>{choiceVer
 $("#upload").onchange=async e=>{
   const f=e.target.files[0],job=uploadJob;if(!f||!job)return;
   try{const a=await request("/api/image",f);await loadImage(a.file);
+    if(key!==job.format || choiceVersion!==job.version)return;
     const adding=job.action==="sticker"||job.action==="character";
     const role=job.action==="new"?"screenshot":job.action;
-    const positions=["screenshot","character"].includes(role)?mediaSlots(role,a.width/a.height):null;
+    const position=["screenshot","character"].includes(role)?mediaPosition(role,a.width/a.height):null;
     if(adding&&creating!==job.action)return;
     if(!adding&&job.action!=="new"&&!model(job.id))return;
-    change(()=>{if(adding)addArtwork(job.action,a.file,f.name.replace(/\.[^.]+$/,""),positions);
-      else if(job.action==="new")addLayer({kind:"image",name:f.name.replace(/\.[^.]+$/,""),src:a.file,role:"screenshot",frame:true,fit:"contain"},a.width/a.height,positions);
+    change(()=>{if(adding)addArtwork(job.action,a.file,f.name.replace(/\.[^.]+$/,""),position);
+      else if(job.action==="new")addLayer({kind:"image",name:f.name.replace(/\.[^.]+$/,""),src:a.file,role:"screenshot",frame:true,fit:"contain"},a.width/a.height,position);
       else{const l=model(job.id);if(job.action.startsWith("part-"))l.parts[+job.action.slice(5)]=a.file;
         else{setLayerImage(l,a.file,f.name.replace(/\.[^.]+$/,""))}}});
   }catch(err){report(err)}
@@ -412,8 +426,14 @@ function drag(e){
 }
 function endDrag(){if(gesture?.moved){dirty();drawProperties()}gesture=null}
 for(const el of [canvas,$("#resize")]){el.onpointerdown=e=>begin(e,el!==canvas);el.onpointermove=drag;el.onpointerup=endDrag;el.onpointercancel=endDrag}
-document.querySelectorAll("[data-format]").forEach(b=>b.onclick=()=>{key=b.dataset.format;remember();renderUI()});
-$("#undo").onclick=()=>history(undoStack,redoStack);$("#redo").onclick=()=>history(redoStack,undoStack);
+document.querySelectorAll("[data-format]").forEach(b=>b.onclick=()=>{
+  if(key===b.dataset.format)return;
+  endDrag();cancelHold();creating=null;uploadJob=null;choiceVersion++;
+  key=b.dataset.format;
+  if(!model())active=model("title")?"title":layers().at(-1).id;
+  remember();renderUI();
+});
+$("#undo").onclick=()=>history("undo");$("#redo").onclick=()=>history("redo");
 $("#backup").onclick=backup;
 const formatRatios={portrait:"3:4",main:"4:3",wide:"16:9",wechat:"2.35:1"};
 const dialog=$("#review-dialog");
@@ -460,7 +480,7 @@ window.addEventListener("keydown",e=>{
  const input=e.target.closest("input,textarea,select");
  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="s"){e.preventDefault();save().catch(report);return}
  if(input||!doc||dialog.open||$("#edit-page").hidden)return;
- if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="z"){e.preventDefault();e.shiftKey?history(redoStack,undoStack):history(undoStack,redoStack);return}
+ if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="z"){e.preventDefault();e.shiftKey?history("redo"):history("undo");return}
  const offset={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,-1],ArrowDown:[0,1]}[e.key];
  if(offset&&!pos().locked&&active!=="background"){e.preventDefault();change(()=>{pos().x+=offset[0]*(e.shiftKey?10:1);pos().y+=offset[1]*(e.shiftKey?10:1)})}
 });
@@ -477,7 +497,7 @@ $("#shot-skip").onclick=()=>{
 };
 $("#welcome-skip").onclick=()=>dismissWelcome().catch(report);
 $("#welcome-file").onchange=async event=>{
-  const input=event.target,file=input.files[0];
+  const input=event.target,file=input.files[0],format=key,version=choiceVersion;
   if(!file)return;
   const status=$("#welcome-status"),skip=$("#welcome-skip");
   input.disabled=skip.disabled=true;
@@ -487,21 +507,23 @@ $("#welcome-file").onchange=async event=>{
     const {item}=await request("/api/library/character/import",file,{"X-Asset-Name":encodeURIComponent(name)});
     const asset=await request("/api/library/character/use",JSON.stringify({file:item.file}));
     await loadImage(asset.file);
-    const positions=mediaSlots("character",imageAspect(asset.file));
-    if(!doc.layers.some(layer=>layer.kind==="character")){
-      change(()=>addArtwork("character",asset.file,item.name,positions));remember();await save();
+    const position=mediaPosition("character",imageAspect(asset.file));
+    if(key===format&&version===choiceVersion&&!models().some(layer=>layer.kind==="character")){
+      change(()=>addArtwork("character",asset.file,item.name,position));remember();await save();
     }
     await refreshLibrary();await dismissWelcome();info("人物已存入素材库");
   }catch(err){status.textContent=err.message}
   finally{input.value="";input.disabled=skip.disabled=false}
 };
 try{
- doc=await request("/api/draft");rev=doc.revision;
+ doc=await request("/api/draft");
+ if(doc.schema!==2)throw new Error("请关闭旧版工作台服务，使用新版 Skill 重新打开原草稿。");
+ rev=doc.revision;
  try{shotSkipped=localStorage.getItem("cover-shot-skip-"+doc.projectId)==="1"}catch{}
  try{const ui=JSON.parse(localStorage.getItem("cover-ui-"+doc.projectId)||"{}");if(sizes[ui.key])key=ui.key;if(typeof ui.active==="string"&&model(ui.active))active=ui.active}catch{}
- if(!model())active=doc.layers.at(-1).id;
+ if(!model())active=layers().at(-1).id;
  await Promise.all([prepare(doc),loadFonts()]);renderUI();review=await request("/api/review");setStatus(review.confirmed?"已确认":"已同步");$("#review").disabled=false;
  await startLibrary({request,info,save,fit,updated:()=>{if(!$("#properties :is(input,textarea,select):focus"))drawProperties()}}).catch(report);
   const welcome=await request("/api/portrait/welcome");
-  $("#portrait-welcome").hidden=!welcome.show||doc.skipCharacterHint||doc.layers.some(layer=>layer.kind==="character");
+  $("#portrait-welcome").hidden=!welcome.show||doc.skipCharacterHint||models().some(layer=>layer.kind==="character");
 }catch(e){setStatus("打开失败");report(e)}

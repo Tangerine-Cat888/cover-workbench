@@ -85,9 +85,9 @@ def extract(source):
 
 
 def preview(project, payload):
-    from cover_project import IMAGE, image_asset
+    from cover_project import IMAGE, image_asset, layers_for_format
     file = payload.get("file")
-    layers = json.loads((project / "cover.json").read_bytes())["layers"]
+    layers = layers_for_format(json.loads((project / "cover.json").read_bytes()), payload.get("format", "portrait"))
     if not isinstance(file, str) or not IMAGE.fullmatch(file) or not any(
         l["kind"] == "character" and l["id"] == payload.get("layer") and l.get("src") == file for l in layers
     ):

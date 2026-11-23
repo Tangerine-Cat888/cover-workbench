@@ -25,14 +25,14 @@ python scripts/cover_workbench.py open ./draft --output-dir ./finished --title "
 python scripts/cover_workbench.py add-media ./draft --screenshot screen.png --character portrait.png
 ```
 
-聊天收到的新图和网页选图都按四个画幅分别放置，截图在人物下方。已有页面显示「已同步」后刷新即可查看聊天中补的图。
+网页选图只加入当前画幅，截图排在人物下方。在聊天中给整组补图时，默认分别排入四种画幅。仅补指定尺寸可用 `add-media ./draft --format wide --screenshot screen.png`。画幅键为 `portrait`、`main`、`wide`、`wechat`，可重复传 `--format`。已有页面显示「已同步」后刷新即可查看聊天中补的图。
 
 首次提示支持导入人物或跳过。也可在「素材库」添加、改名、排序、设置是否显示或移到系统回收站；在编辑器中从对应图层属性选择。首次选图支持 PNG、JPEG、WebP。人物带背景时可在人物图层中预览抠图、应用透明底或恢复原图。用户选择安装可选组件时才联网下载。
 
-黑体、宋体、手写体是可选字体类别；实际字形取决于已安装或导入的字体。背景的颜色、渐变晕染、图片缩放和偏移可在右侧编辑。文字、素材和图层跨画幅共享。各画幅分别保留位置、尺寸和排序。
+黑体、宋体、手写体是可选字体类别；实际字形取决于已安装或导入的字体。背景的颜色、渐变晕染、图片缩放和偏移可在右侧编辑。各画幅独立保存文字、字体、颜色、背景、图片选择、图层增删和位置。切换画幅后可分别撤销或重做。旧草稿沿用原有画面和各尺寸位置，首次修改保存时转为独立画幅。
 
 ## 文件与导出
 
-草稿的 `cover.json`、`assets/` 与确认记录应一起备份。用户资料默认位于系统本地应用数据目录下的 `cover-workbench` 子目录；Linux 遵循 XDG 数据目录。通过 `COVER_WORKBENCH_DATA_DIR` 可指定绝对路径。
+草稿的 `cover.json`、`assets/` 与确认记录应一起备份。四种画幅保存在同一个草稿文件里，共用的素材文件只存一份。用户资料默认位于系统本地应用数据目录下的 `cover-workbench` 子目录；Linux 遵循 XDG 数据目录。通过 `COVER_WORKBENCH_DATA_DIR` 可指定绝对路径。
 
 导出使用 `scripts/cover_workbench.py finish <草稿目录>`，可用 `--browser <可执行文件>` 指定 Chromium 或 Edge。原确认失效时返回工作台重新核对。只交付该确认下已实际生成的画幅。依赖来源和字体使用说明见[第三方组件](THIRD_PARTY_NOTICES.md)。

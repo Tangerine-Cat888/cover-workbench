@@ -10,7 +10,7 @@ import time
 from PIL import Image
 
 from cover_paths import data_directory
-from cover_project import IMAGE, FONT, normalize_image, write_atomic, write_json
+from cover_project import IMAGE, FONT, layers_for_format, normalize_image, write_atomic, write_json
 from cover_review import review_lock
 
 LIBRARY = data_directory() / "library"
@@ -117,7 +117,7 @@ def store_item(kind,data,name):
 def save_artwork(project,kind,payload):
     file=check_file(kind,payload.get("file"))
     doc=json.loads((project/"cover.json").read_bytes())
-    layer=next((l for l in doc["layers"] if l["id"]==payload.get("layer")),None)
+    layer=next((l for l in layers_for_format(doc, payload.get("format", "portrait")) if l["id"]==payload.get("layer")),None)
     expected={"font":"text","sticker":"image"}.get(kind,kind)
     if not layer or layer["kind"]!=expected or layer.get("font" if kind=="font" else "src")!=file or (kind=="background" and layer.get("preset")!="image"):
         raise ValueError("请先选中与此分类匹配的图层。")

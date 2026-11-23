@@ -14,7 +14,7 @@ from urllib.request import urlopen
 from uuid import uuid4
 
 from PIL import Image
-from cover_project import ASSETS, IMAGE, FONT, image_asset, make_draft, validate, write_json
+from cover_project import ASSETS, IMAGE, FONT, SIZES, independent_canvases, image_asset, make_draft, validate, write_json
 from cover_review import bind_output, confirm, destination, finish, review_lock, review_state
 from cover_library import portrait_welcome, FOLDERS, catalog, manage, preview_file, store_item, save_artwork, use_artwork
 from cover_media import inputs, insert
@@ -58,7 +58,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200,{"instance":self.server.instance,"project":str(project)})
             return
         if path=="/api/draft":
-            self.send(200,(project/"cover.json").read_bytes())
+            self.send(200,independent_canvases(json.loads((project/"cover.json").read_bytes())))
             return
         if path=="/api/review":
             with review_lock(project):
@@ -101,11 +101,19 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(403,{"error":"请在工作台中操作。"})
                 return
             size=int(self.headers.get("Content-Length",0))
-            if not 0<size<=(LIMIT if path=="/api/image" or path.endswith("/import") else 1_500_000):
+            limit = 1_500_000
+            if path == "/api/draft":
+                limit *= len(SIZES) + 1  # Four independent copies of a previously shared draft.
+            elif path == "/api/image" or path.endswith("/import"):
+                limit = LIMIT
+            if not 0 < size <= limit:
                 raise ValueError("文件太大或内容为空。")
             body=self.rfile.read(size)
             if path=="/api/draft":
                 updated=json.loads(body)
+                if not isinstance(updated, dict) or updated.get("schema") != 2:
+                    self.send(409, {"error":"工作台已支持独立画幅，请备份本页未同步的修改后刷新。"})
+                    return
                 validate(updated,project)
                 with self.server.write_lock, review_lock(project):
                     original=json.loads((project/"cover.json").read_bytes())
@@ -197,7 +205,11 @@ def main():
     parser.add_argument("--output-dir",type=Path,help="Dedicated chat folder or an explicitly requested destination for final PNGs")
     parser.add_argument("--port",type=int,default=0)
     parser.add_argument("--browser",help="Chromium executable for final rendering")
+    parser.add_argument("--format", dest="formats", action="append", choices=SIZES,
+                        help="聊天补图的目标画幅，可重复；省略时为整组封面补图。")
     args=parser.parse_args()
+    if args.formats and args.action != "add-media":
+        parser.error("--format 仅用于给已有草稿补图。")
     project=args.project.resolve()
     if args.action=="finish":
         try:
@@ -214,8 +226,8 @@ def main():
             if not materials:
                 raise ValueError("请选择视频、截图或人物。")
             with review_lock(project):
-                doc=json.loads(file.read_bytes())
-                added=insert(doc,materials)
+                doc=independent_canvases(json.loads(file.read_bytes()))
+                added=insert(doc,materials,args.formats)
                 if added:
                     doc["revision"]+=1
                     validate(doc,project)

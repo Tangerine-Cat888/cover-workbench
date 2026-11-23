@@ -16,23 +16,21 @@ def rectangles():
     return json.loads(block.group(1))
 
 
-def slots(kind, aspect, index=0):
+def media_position(key, kind, aspect, index=0):
     from cover_project import SIZES, placement
     if kind not in ("screenshot","character") or not isinstance(aspect,(int,float)) or not math.isfinite(aspect) or aspect<=0:
         raise ValueError("图片尺寸无效。")
     if type(index) is not int or index<0:
         raise ValueError("素材序号无效。")
-    result={}
-    for key,(w,h) in SIZES.items():
-        options=rectangles()["portrait" if key=="portrait" else "landscape"][kind]
-        box=options[index%len(options)]
-        width=min(w*box["w"],h*box["h"]*aspect)
-        height=width/aspect
-        x=w*box["right"]-width if "right" in box else w*box["x"]
-        y=h*box["bottom"]-height if "bottom" in box else h*box["y"]
-        result[key]=placement("",math.floor(x+.5),math.floor(y+.5),max(1,math.floor(width+.5)),
-                              max(1,math.floor(height+.5)),rotation=box["rotation"])
-    return result
+    w,h=SIZES[key]
+    options=rectangles()["portrait" if key=="portrait" else "landscape"][kind]
+    box=options[index%len(options)]
+    width=min(w*box["w"],h*box["h"]*aspect)
+    height=width/aspect
+    x=w*box["right"]-width if "right" in box else w*box["x"]
+    y=h*box["bottom"]-height if "bottom" in box else h*box["y"]
+    return placement("",math.floor(x+.5),math.floor(y+.5),max(1,math.floor(width+.5)),
+                     max(1,math.floor(height+.5)),rotation=box["rotation"])
 
 
 def inputs(args, project, *, choose_library=False):
@@ -59,29 +57,31 @@ def inputs(args, project, *, choose_library=False):
     return media
 
 
-def insert(doc, materials):
-    added=[]
+def insert(doc, materials, formats=None):
+    added=set()
     for role,asset,label,origin in materials:
         file=asset["file"]
         is_person=role=="character"
-        matches=[l for l in doc["layers"] if l["kind"]=="character"] if is_person else [
-            l for l in doc["layers"] if l["kind"]=="image" and l.get("role")!="sticker"]
-        if any(l.get("src")==file for l in matches):
-            continue
-        if is_person and matches:
-            raise ValueError("当前草稿已有人物，请在该图层的「从本机换图」中确认替换。")
-        positions=slots(role,asset["width"]/asset["height"],len(matches))
         identifier="l"+uuid4().hex
-        layer={"id":identifier,"kind":"character" if is_person else "image","name":("人物" if is_person else "截图")+" · "+label[:62],
-               "sourceLabel":label[:80],"src":file,"fit":"contain"}
-        if not is_person:
-            layer.update(role="screenshot",frame=True)
-        if origin:
-            layer["frameSource"]=origin
-        people={l["id"] for l in doc["layers"] if l["kind"]=="character"}
-        doc["layers"].append(layer)
-        for key,layout in doc["layouts"].items():
+        for key in dict.fromkeys(formats or doc["canvases"]):
+            canvas=doc["canvases"][key]
+            layers,layout=canvas["layers"],canvas["layout"]
+            people={layer["id"] for layer in layers if layer["kind"]=="character"}
+            matches=[layer for layer in layers if layer["id"] in people] if is_person else [
+                layer for layer in layers if layer["kind"]=="image" and layer.get("role")!="sticker"]
+            if any(file in [layer.get("src"),*layer.get("parts",[])] for layer in matches):
+                continue
+            if is_person and matches:
+                raise ValueError("当前草稿已有人物，请在该图层的「从本机换图」中确认替换。")
+            position=media_position(key,role,asset["width"]/asset["height"],len(matches))
+            layer={"id":identifier,"kind":"character" if is_person else "image","name":("人物" if is_person else "截图")+" · "+label[:62],
+                   "sourceLabel":label[:80],"src":file,"fit":"contain"}
+            if not is_person:
+                layer.update(role="screenshot",frame=True)
+            if origin:
+                layer["frameSource"]=origin
+            layers.append(layer)
             index=next((i for i,p in enumerate(layout) if p["id"] in people),len(layout)) if not is_person else len(layout)
-            layout.insert(index,{**positions[key],"id":identifier})
-        added.append(identifier)
+            layout.insert(index,{**position,"id":identifier})
+            added.add((role,file))
     return added

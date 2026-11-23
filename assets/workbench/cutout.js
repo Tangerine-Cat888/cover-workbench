@@ -27,7 +27,7 @@ async function run(job,install=false){
       if(!current(job))return;
       status.textContent="正在本机识别人物轮廓…";
     }
-    const result=await job.request("/api/portrait/preview",JSON.stringify({layer:job.id,file:job.src}));
+    const result=await job.request("/api/portrait/preview",JSON.stringify({format:job.format,layer:job.id,file:job.src}));
     if(!current(job))return;
     if(result.setupRequired){
       status.textContent="首次使用需联网安装抠图组件。人物图片只在本机处理。";

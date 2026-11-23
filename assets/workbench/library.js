@@ -217,7 +217,7 @@ export async function startLibrary(callbacks){
     if(job.action!=="delete"&&!name)return;
     el("item-dialog").close();
     perform(async()=>{
-      if(job.action==="collect"){await api.save();const result=await post(job.kind,"save",{layer:job.source.layer,file:job.source.file,name});if(kind===job.kind)chosen=result.item.file;api.info((result.created?"已存入":"素材库中已有")+"「"+result.item.name+"」")}
+      if(job.action==="collect"){await api.save();const result=await post(job.kind,"save",{format:job.source.format,layer:job.source.layer,file:job.source.file,name});if(kind===job.kind)chosen=result.item.file;api.info((result.created?"已存入":"素材库中已有")+"「"+result.item.name+"」")}
       else await post(job.kind,job.action,{id:job.id,name});
       await reload();el("catalog-status").textContent=job.action==="delete"?(job.builtin?"内置素材已移除":"素材已移入回收站"):"已保存";
     });

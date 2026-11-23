@@ -12,7 +12,7 @@ from uuid import uuid4
 from cover_host import current_chat, chat_directory
 
 from PIL import Image
-from cover_project import ASSETS, IMAGE, FONT, SIZES, write_json
+from cover_project import ASSETS, IMAGE, FONT, SIZES, independent_canvases, write_json
 
 LABELS = {"portrait": "3x4", "main": "4x3", "wide": "16x9", "wechat": "公众号-2.35x1"}
 
@@ -85,6 +85,7 @@ def confirm(project, payload):
     return review_state(project)
 
 def render(project, doc, formats, executable=None):
+    doc = independent_canvases(doc)
     from playwright.sync_api import sync_playwright
     with sync_playwright() as pw:
         if not executable and not Path(pw.chromium.executable_path).is_file():
@@ -117,7 +118,8 @@ def render(project, doc, formats, executable=None):
             const renderer = await import('/canvas.js');
             await Promise.all([renderer.loadFonts(), renderer.prepare(doc)]);
             window.paint = key => {
-                const canvas = document.querySelector('canvas');
+                const canvas = document.createElement('canvas');
+                canvas.getContext('2d', {willReadFrequently: true});
                 renderer.draw(canvas,doc,key);
                 return canvas.toDataURL('image/png').split(',')[1];
             };

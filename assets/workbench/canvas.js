@@ -17,10 +17,11 @@ const bitmap=file=>cache.get(file)?.img;
 export function imageAspect(file){const im=bitmap(file);return im?im.width/im.height:1}
 export async function prepare(doc) {
   const files=new Set();
-  for (const layer of doc.layers) {
+  const allLayers=Object.values(doc.canvases).flatMap(canvas=>canvas.layers);
+  for (const layer of allLayers) {
     for(const file of [layer.src,layer.art,...(layer.parts||[]),...Object.values(layer.backgrounds||{})]) if(file) files.add(file);
   }
-  await Promise.all([...Array.from(files,loadImage),...doc.layers.filter(l=>l.kind==="text").map(l=>loadProjectFont(l.font))]);
+  await Promise.all([...Array.from(files,loadImage),...allLayers.filter(l=>l.kind==="text").map(l=>loadProjectFont(l.font))]);
 }
 const projectFonts=new Map();
 export function loadProjectFont(file){
@@ -171,8 +172,8 @@ function picture(ctx,l,p){
 export function draw(canvas,doc,key) {
   const [width,height]=sizes[key];if(canvas.width!==width)canvas.width=width;if(canvas.height!==height)canvas.height=height;
   const ctx=canvas.getContext("2d");ctx.clearRect(0,0,width,height);ctx.imageSmoothingQuality="high";
-  const layers=new Map(doc.layers.map(l=>[l.id,l]));
-  for(const p of doc.layouts[key]){
+  const layers=new Map(doc.canvases[key].layers.map(l=>[l.id,l]));
+  for(const p of doc.canvases[key].layout){
     if(!p.visible)continue;const l=layers.get(p.id);if(!l)continue;
     ctx.save(); ctx.translate(p.x+p.w/2,p.y+p.h/2);ctx.rotate(p.rotation*Math.PI/180);ctx.translate(-p.w/2,-p.h/2);
     if(l.kind==="background")background(ctx,l,p.w,p.h,key);

@@ -1,4 +1,5 @@
 """Local document format and asset storage for the cover workbench."""
+from copy import deepcopy
 import hashlib
 import io
 import json
@@ -73,15 +74,30 @@ def add_wechat_layout(doc):
     doc["layouts"]["wechat"] = placements
     return True
 
+def independent_canvases(doc):
+    """Materialize legacy shared layers without writing to a previously confirmed draft."""
+    if doc.get("schema") == 2:
+        return doc
+    if doc.get("schema") != 1:
+        raise ValueError("不支持的封面草稿版本。")
+    add_wechat_layout(doc)
+    result = {k: v for k, v in doc.items() if k not in ("layers", "layouts")}
+    result["schema"] = 2
+    result["canvases"] = {
+        key: {"layers": deepcopy(doc["layers"]), "layout": layout}
+        for key, layout in doc["layouts"].items()
+    }
+    return result
+
+def layers_for_format(doc, key):
+    if key not in SIZES:
+        raise ValueError("请选择图层所属的画幅。")
+    return independent_canvases(doc)["canvases"][key]["layers"]
+
 def make_draft(project, args):
     project.mkdir(parents=True, exist_ok=True)
     path = project/"cover.json"
     if path.exists():
-        doc = json.loads(path.read_bytes())
-        if add_wechat_layout(doc):
-            validate(doc, project)
-            doc["revision"] += 1
-            write_json(path, doc)
         return
     (project/"assets").mkdir(exist_ok=True)
     from cover_media import inputs, insert
@@ -92,17 +108,18 @@ def make_draft(project, args):
     ]
     if args.background:
         layers[0].update(src=image_asset(project,Path(args.background).read_bytes())["file"],preset="image")
-    layouts = {}
+    canvases = {}
     for key,(w,h) in SIZES.items():
         vertical = key=="portrait"
         left,top = round(w*.07),round(h*.06)
-        layouts[key] = [
+        layout = [
             placement("background",0,0,w,h),
             placement("series",left,top,round(w*.82),round(h*.05),round(h*.03)),
             placement("title",left,top+round(h*.076),round(w*(.86 if vertical else .60)),
                       round(h*.28),round(h*(.079 if vertical else .096))),
         ]
-    doc=dict(schema=1,projectId=uuid4().hex,revision=0,name=args.name or project.name,layers=layers,layouts=layouts)
+        canvases[key] = {"layers":deepcopy(layers),"layout":layout}
+    doc=dict(schema=2,projectId=uuid4().hex,revision=0,name=args.name or project.name,canvases=canvases)
     if args.skip_character:
         doc["skipCharacterHint"]=True
     if args.skip_screenshot:
@@ -119,39 +136,43 @@ def validate(doc, project):
         return type(value) in (int,float) and math.isfinite(value) and low<=value<=high
     def check_image(name):
         need(isinstance(name,str) and IMAGE.fullmatch(name) and (project/"assets"/name).is_file())
-    need(isinstance(doc,dict) and doc.get("schema")==1 and type(doc.get("revision")) is int)
+    need(isinstance(doc,dict) and type(doc.get("revision")) is int)
+    doc = independent_canvases(doc)
+    need(isinstance(doc.get("canvases"),dict) and set(doc["canvases"]) == set(SIZES))
     need(isinstance(doc.get("name"),str) and 0<len(doc["name"])<=200)
     need(isinstance(doc.get("projectId"), str) and ID.fullmatch(doc["projectId"]))
-    layers=doc.get("layers")
-    need(isinstance(layers,list) and 1<=len(layers)<=150)
-    ids=set()
-    backgrounds=[]
-    for layer in layers:
-        need(isinstance(layer,dict))
-        id_=layer.get("id")
-        need(isinstance(id_,str) and ID.fullmatch(id_) and id_ not in ids)
-        ids.add(id_)
-        kind=layer.get("kind")
-        need(kind in ("text","image","character","background") and isinstance(layer.get("name"),str))
-        if kind=="background": backgrounds.append(id_)
-        for field in ("src","art"):
-            if layer.get(field): check_image(layer[field])
-        if "cutoutOriginal" in layer:
-            need(kind=="character" and bool(layer.get("src")))
-            check_image(layer["cutoutOriginal"])
-        for field in ("text","artText"):
-            if field in layer: need(isinstance(layer[field],str) and len(layer[field])<=2000)
-        if kind=="text":
-            font=layer.get("font")
-            need(isinstance(font,str) and (font in ("sans","ink","serif") or
-                 (FONT.fullmatch(font) and (project/"assets"/font).is_file())) and "text" in layer)
-        if kind in ("text","background"): need(isinstance(layer.get("color"),str) and COLORS.fullmatch(layer["color"]))
-        if kind=="background" and "gradientTint" in layer:
-            need(isinstance(layer["gradientTint"],str) and COLORS.fullmatch(layer["gradientTint"]))
-        for ref in layer.get("backgrounds",{}).values(): check_image(ref)
-        for ref in layer.get("parts",[]): check_image(ref)
-    need(backgrounds==["background"] and set(doc.get("layouts",{}))==set(SIZES))
-    for layout in doc["layouts"].values():
+    for canvas in doc["canvases"].values():
+        need(isinstance(canvas,dict))
+        layers=canvas.get("layers")
+        need(isinstance(layers,list) and 1<=len(layers)<=150)
+        ids=set()
+        backgrounds=[]
+        for layer in layers:
+            need(isinstance(layer,dict))
+            id_=layer.get("id")
+            need(isinstance(id_,str) and ID.fullmatch(id_) and id_ not in ids)
+            ids.add(id_)
+            kind=layer.get("kind")
+            need(kind in ("text","image","character","background") and isinstance(layer.get("name"),str))
+            if kind=="background": backgrounds.append(id_)
+            for field in ("src","art"):
+                if layer.get(field): check_image(layer[field])
+            if "cutoutOriginal" in layer:
+                need(kind=="character" and bool(layer.get("src")))
+                check_image(layer["cutoutOriginal"])
+            for field in ("text","artText"):
+                if field in layer: need(isinstance(layer[field],str) and len(layer[field])<=2000)
+            if kind=="text":
+                font=layer.get("font")
+                need(isinstance(font,str) and (font in ("sans","ink","serif") or
+                     (FONT.fullmatch(font) and (project/"assets"/font).is_file())) and "text" in layer)
+            if kind in ("text","background"): need(isinstance(layer.get("color"),str) and COLORS.fullmatch(layer["color"]))
+            if kind=="background" and "gradientTint" in layer:
+                need(isinstance(layer["gradientTint"],str) and COLORS.fullmatch(layer["gradientTint"]))
+            for ref in layer.get("backgrounds",{}).values(): check_image(ref)
+            for ref in layer.get("parts",[]): check_image(ref)
+        need(backgrounds==["background"])
+        layout=canvas.get("layout")
         need(isinstance(layout,list) and len(layout)==len(ids) and layout[0]["id"]=="background")
         need({p["id"] for p in layout}==ids)
         for p in layout:
